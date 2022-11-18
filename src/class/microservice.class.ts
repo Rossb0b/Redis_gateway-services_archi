@@ -6,6 +6,7 @@ import * as logger from "pino";
 // Import Internal Dependencies
 import { channels, config, events } from "../utils/config";
 import {
+  InteractionMetadata,
   Prefix,
   RegistrationDataIn,
   RegistrationMetadataIn,
@@ -25,8 +26,9 @@ export class MicroService {
 
   private name: string;
   private logger: logger.Logger;
+  private givenUuid: string;
   private serviceChannelName: string;
-  private serviceChannel: Redis.Channel;
+  private serviceChannel: Redis.Channel<Record<string, any>, Record<string, any>>;
 
   constructor(options: MicroServiceOptions) {
     const { name, prefix, subscribeTo } = options;
@@ -58,12 +60,16 @@ export class MicroService {
     this.subscriber = await Redis.initRedis({ port } as any, true);
     await this.subscriber.subscribe(this.gatewayChannelName);
 
-    let index = 0;
     this.subscriber.on("message", async(channel, message) => {
       const formatedMessage = { ...JSON.parse(message) };
 
       // Avoid reacting to his own message
-      if (formatedMessage.metadata && formatedMessage.metadata.origin === this.personalUuid) {
+      if (formatedMessage.metadata &&
+        (
+          formatedMessage.metadata.origin === this.personalUuid ||
+          formatedMessage.metadata.origin === this.givenUuid
+        )
+      ) {
         return;
       }
 
@@ -82,13 +88,10 @@ export class MicroService {
       catch (error) {
         console.error(error);
       }
-      finally {
-        index++;
-      }
     });
 
     await this.gatewayChannel.publish({
-      event: events.gateway.register,
+      event: events.gatewayChannels.registration.register,
       data: {
         name: this.name,
         prefix: this.prefix,
@@ -105,21 +108,21 @@ export class MicroService {
   private async registerPrivateChannel(data: Record<string, any>) {
     this.serviceChannelName = `${this.prefix ? `${this.prefix}-` : ""}${data.uuid}`;
 
-    console.log("attributed uuid", data.uuid);
-
     await this.subscriber.subscribe(this.serviceChannelName);
 
     this.serviceChannel = new Redis.Channel({
       name: data.uuid,
       prefix: this.prefix
     });
+
+    this.givenUuid = data.uuid;
   }
 
   private async handleGatewayMessages(message: Record<string, any>): Promise<void> {
     const { event, data, metadata } = message;
 
     switch (event) {
-      case events.gateway.approvement:
+      case events.gatewayChannels.registration.approvement:
         this.logger.info({
           event,
           data,
@@ -128,6 +131,7 @@ export class MicroService {
         }, "New approvement message from gateway.");
 
         await this.registerPrivateChannel(data);
+
         break;
       default:
         this.logger.info({
@@ -136,15 +140,43 @@ export class MicroService {
           metadata,
           uptime: process.uptime()
         }, "New unknown message from gateway");
+
         break;
     }
   }
 
   private async handleMessages(channel: string, message: Record<string, any>): Promise<void> {
-    const { event, data, metadata } = message;
+    const { event } = message;
 
-    console.log("not happening", channel, event, data, metadata);
-    // if (channel === this.serviceChannelName) {
-    // }
+    if (channel === this.serviceChannelName) {
+      if (event === events.serviceChannels.check.ping) {
+        const { metadata } = message as { data: Record<string, any>, metadata: InteractionMetadata };
+
+        const event = {
+          event: events.serviceChannels.check.pong,
+          data: {
+            prefix: this.prefix
+          },
+          metadata: {
+            origin: this.givenUuid,
+            to: metadata.origin,
+            interactionId: metadata.interactionId
+          }
+        }
+
+        await this.serviceChannel.publish(event);
+
+        this.logger.info({
+          event,
+          metadata,
+          uptime: process.uptime()
+        }, "PUBLISHED PONG");
+      }
+      else {
+        const { data, metadata } = message;
+
+        console.log("not happening", channel, event, data, metadata);
+      }
+    }
   }
 }

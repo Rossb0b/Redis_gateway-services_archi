@@ -14,7 +14,8 @@ import {
   RegistrationDataOut,
   RegistrationMetadataIn,
   RegistrationMetadataOut,
-  SubscribeTo
+  SubscribeTo,
+  InteractionMetadata
 } from "~/types";
 
 // Constants
@@ -48,7 +49,7 @@ export class Gateway {
   protected subscriber: Redis.Redis;
 
   private logger: logger.Logger;
-  private serviceChannels = new Map<string, Redis.Channel>();
+  private serviceChannels = new Map<string, Redis.Channel<Record<string, any>, InteractionMetadata>>();
 
   private treeNames = new Set<string>();
 
@@ -75,8 +76,6 @@ export class Gateway {
       name: channels.gateway,
       prefix
     });
-
-    console.log("personnal uuid :", this.personalUuid);
   }
 
   public async initialize() {
@@ -109,23 +108,23 @@ export class Gateway {
       }
     });
 
-    // this.pingServiceInterval = setInterval(async() => {
-    //   try {
-    //     await this.pingServices();
-    //   }
-    //   catch (error) {
-    //     console.error(error);
-    //   }
-    // }, kPingServiceInterval).unref();
+    this.pingServiceInterval = setInterval(async() => {
+      try {
+        await this.pingServices();
+      }
+      catch (error) {
+        console.error(error);
+      }
+    }, kPingServiceInterval).unref();
 
-    // this.checkServiceInterval = setInterval(async() => {
-    //   try {
-    //     await this.checkServicesLastActivity();
-    //   }
-    //   catch (error) {
-    //     console.error(error);
-    //   }
-    // }, kCheckServices).unref();
+    this.checkServiceInterval = setInterval(async() => {
+      try {
+        await this.checkServicesLastActivity();
+      }
+      catch (error) {
+        console.error(error);
+      }
+    }, kCheckServices).unref();
   }
 
   public async clearTree(treeName: string) {
@@ -175,14 +174,11 @@ export class Gateway {
 
     // Approve the service & send him info so he can use the dedicated channel
     const event = {
-      event: events.gateway.approvement,
+      event: events.gatewayChannels.registration.approvement,
       data: {
-        uuid: uuid,
-        origin: this.personalUuid,
-        to: metadata.origin
+        uuid: uuid
       },
       metadata: {
-        uuid: uuid,
         origin: this.personalUuid,
         to: metadata.origin
       }
@@ -196,88 +192,92 @@ export class Gateway {
     }, "PUBLISHED APPROVEMENT");
   }
 
-  // private async pingServices() {
-  //   for (const treeName of this.treeNames) {
-  //     const tree = await this.getTree(treeName);
+  private async pingServices() {
+    for (const treeName of this.treeNames) {
+      const tree = await this.getTree(treeName);
 
-  //     if (tree) {
-  //       for (const uuid of Object.keys(tree)) {
-  //         const serviceChannel = this.serviceChannels.get(uuid);
+      if (tree) {
+        for (const uuid of Object.keys(tree)) {
+          const serviceChannel = this.serviceChannels.get(uuid);
 
-  //         if (serviceChannel) {
-  //           const interactionId = uuidv4();
+          if (serviceChannel) {
+            const interactionId = uuidv4();
 
-  //           const event = {
-  //             event: kEvents.gateway.check,
-  //             data: null,
-  //             metadata: {
-  //               origin: this.personalUuid,
-  //               to: uuid,
-  //               interactionId
-  //             }
-  //           };
+            const event = {
+              event: events.serviceChannels.check.ping,
+              data: {},
+              metadata: {
+                origin: this.personalUuid,
+                to: uuid,
+                interactionId
+              }
+            };
 
-  //           // await serviceChannel.publish(event);
+            await serviceChannel.publish(event);
 
-  //           this.interactions.set(interactionId, { ...event, aliveSince: Date.now() });
-  //         }
-  //       }
-  //     }
-  //   }
-  // }
+            this.interactions.set(interactionId, { ...event, aliveSince: Date.now() });
 
-  // private async checkServicesLastActivity() {
-  //   for (const treeName of this.treeNames) {
-  //     const tree = await this.getTree(treeName);
+            this.logger.info({
+              ...event
+            }, "PUBLISHED PING")
+          }
+        }
+      }
+    }
+  }
 
-  //     if (tree) {
-  //       const now = Date.now();
-  //       console.log("iteration");
+  private async checkServicesLastActivity() {
+    for (const treeName of this.treeNames) {
+      const tree = await this.getTree(treeName);
 
-  //       for (const [uuid, service] of Object.entries(tree)) {
-  //         if (now > service.lastActivity + kServiceIdleTime) {
-  //           // Remove the service from the tree & update it.
-  //           console.log("outdated service");
-  //         }
-  //        }
-  //     }
-  //   }
-  // }
+      if (tree) {
+        const now = Date.now();
+
+        for (const [uuid, service] of Object.entries(tree)) {
+          if (now > service.lastActivity + kServiceIdleTime) {
+            // Remove the service from the tree & update it.
+            delete tree[uuid];
+
+            await this.KvPeer.setValue({
+              key: treeName,
+              value: JSON.stringify(tree)
+            });
+
+            for (const [interactionId, interaction] of this.interactions) {
+              if (interaction.metadata.to === uuid) {
+                // Delete ping interaction since the service is off
+                if (interaction.event === events.serviceChannels.check.ping) {
+                  this.interactions.delete(interactionId);
+                }
+
+                // redistribute events & so interactions to according services
+
+                // delete the previous interactions
+              }
+            }
+
+            this.logger.info({
+              uuid,
+              service
+            }, "Removed inactif service");
+          }
+         }
+      }
+    }
+  }
 
   private async handleMessages(channel: string, message: Record<string, any>) {
     const { event, data, metadata } = message;
 
-    this.logger.info({
-      channel,
-      event,
-      data,
-      metadata,
-      uptime: process.uptime()
-    }, "any event");
-  }
-
-  private async handleGatewayMessages(message: Record<string, any>) {
-    const { event, data, metadata } = message;
-
     switch (event) {
-      case events.gateway.register:
+      case events.serviceChannels.check.pong:
         this.logger.info({
+          channel,
           event,
           data,
           metadata,
           uptime: process.uptime()
-        }, "registration");
-
-        await this.approveService(data as RegistrationDataIn, metadata as RegistrationMetadataIn);
-
-        break;
-      case events.gateway.check:
-        this.logger.info({
-          event,
-          data,
-          metadata,
-          uptime: process.uptime()
-        }, "check");
+        }, "PONG FROM A SERVICE");
 
         const { interactionId } = metadata;
 
@@ -287,14 +287,54 @@ export class Gateway {
           this.interactions.delete(interactionId);
         }
 
+        const treeName = `${data.prefix ? `${data.prefix}-` : ""}${serviceStoreName}`;
+        const tree = await this.getTree(treeName);
+
+        if (tree) {
+          tree[metadata.origin].lastActivity = Date.now();
+
+          await this.KvPeer.setValue({
+            key: treeName,
+            value: JSON.stringify(tree)
+          });
+        }
+
         break;
       default:
+        // Deal with possible event to distribute them to the related services (using the subscribeTo)
+        this.logger.info({
+          channel,
+          event,
+          data,
+          metadata,
+          uptime: process.uptime()
+        }, "any event");
+
+        break;
+    }
+  }
+
+  private async handleGatewayMessages(message: Record<string, any>) {
+    const { event, data, metadata } = message;
+
+    switch (event) {
+      case events.gatewayChannels.registration.register:
         this.logger.info({
           event,
           data,
           metadata,
           uptime: process.uptime()
-        }, "What the fuck ?");
+        }, "A new service want to be registred");
+
+        await this.approveService(data as RegistrationDataIn, metadata as RegistrationMetadataIn);
+
+        break;
+      default:
+        this.logger.error({
+          event,
+          data,
+          metadata
+        }, "Unknown event for the gateway channel");
 
         break;
     }

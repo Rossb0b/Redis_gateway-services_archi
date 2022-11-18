@@ -51,3 +51,9 @@ export interface RegistrationMessageOut {
   data: RegistrationDataOut;
   metadata: RegistrationMetadataOut;
 }
+
+export interface InteractionMetadata {
+  origin: string;
+  to: string;
+  interactionId: string;
+}
