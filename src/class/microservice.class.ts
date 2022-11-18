@@ -4,52 +4,47 @@ import { v4 as uuidv4 } from "uuid";
 import * as logger from "pino";
 
 // Import Internal Dependencies
-import { config } from "../config";
-import { RegisterResponse } from "./gateway.class";
+import { channels, config, events } from "../utils/config";
+import {
+  Prefix,
+  RegistrationDataIn,
+  RegistrationMetadataIn,
+  SubscribeTo
+} from "../types/index";
 
-export interface MicroServiceOptions {
-  /* Service name */
-  name: string;
-  /* Prefix for the channel name, commonly used to distinguish environnements */
-  prefix?: string;
-}
-
-export interface PublishData {
-  name: string;
-}
-
-export interface PublishMetadata {
-  origin: string;
-}
+type MicroServiceOptions = RegistrationDataIn;
 
 export class MicroService {
-  readonly registrationChannel: Redis.Channel<PublishMetadata, PublishData>;
-  readonly prefix: string | undefined;
-  readonly gatewayChannel: string;
+  readonly gatewayChannel: Redis.Channel<MicroServiceOptions, RegistrationMetadataIn>;
+  readonly gatewayChannelName: string;
+  readonly prefix: Prefix | undefined;
+  readonly subscribeTo: SubscribeTo | undefined;
 
-  protected personalUuid: string;
+  readonly personalUuid: string = uuidv4();
   protected subscriber: Redis.Redis;
 
   private name: string;
   private logger: logger.Logger;
-  private channel: Redis.Channel;
+  private serviceChannelName: string;
+  private serviceChannel: Redis.Channel;
 
   constructor(options: MicroServiceOptions) {
-    const { name, prefix } = options;
+    const { name, prefix, subscribeTo } = options;
 
     this.name = name;
     this.prefix = prefix;
-    this.gatewayChannel = `${prefix ? `${prefix}-` : ""}${config.channel.gateway}`;
-
-    this.personalUuid = uuidv4();
+    this.subscribeTo = subscribeTo;
+    this.gatewayChannelName = `${prefix ? `${prefix}-` : ""}${channels.gateway}`;
 
     // Gérer ENV ??
     this.logger = logger.pino().child({ service: `${prefix ? `${prefix}-` : ""}${this.name}` });
 
-    this.registrationChannel = new Redis.Channel({
-      name: config.channel.gateway,
+    this.gatewayChannel = new Redis.Channel({
+      name: channels.gateway,
       prefix
     });
+
+    console.log("personnal uuid :", this.personalUuid);
   }
 
   get redis() {
@@ -59,55 +54,97 @@ export class MicroService {
   public async initialize() {
     const { port } = config.redis;
 
-    await Redis.initRedis({ port } as any);
+    // Subscribe to the gateway channel
     this.subscriber = await Redis.initRedis({ port } as any, true);
+    await this.subscriber.subscribe(this.gatewayChannelName);
 
-    await this.handleRegistrationServiceChannel();
+    let index = 0;
+    this.subscriber.on("message", async(channel, message) => {
+      const formatedMessage = { ...JSON.parse(message) };
 
-    await this.registerOnGateway();
-  }
+      // Avoid reacting to his own message
+      if (formatedMessage.metadata && formatedMessage.metadata.origin === this.personalUuid) {
+        return;
+      }
 
-  private async registerOnGateway() {
-    await this.registrationChannel.publish({
-      event: config.event.gateway.register,
+      try {
+        switch (channel) {
+          case this.gatewayChannelName :
+            if (formatedMessage.metadata.to === this.personalUuid) {
+              await this.handleGatewayMessages(formatedMessage);
+            }
+            break;
+          default:
+            await this.handleMessages(channel, formatedMessage);
+            break;
+        }
+      }
+      catch (error) {
+        console.error(error);
+      }
+      finally {
+        index++;
+      }
+    });
+
+    await this.gatewayChannel.publish({
+      event: events.gateway.register,
       data: {
-        name: this.name
+        name: this.name,
+        prefix: this.prefix,
+        subscribeTo: this.subscribeTo
       },
       metadata: {
         origin: this.personalUuid
       }
     });
 
-    this.logger.info("Registring as a new service to the gateway");
+    this.logger.info({ uptime: process.uptime() }, "Registring as a new service to the gateway");
   }
 
-  private async handleRegistrationServiceChannel() {
-    await this.subscriber.subscribe(this.gatewayChannel);
+  private async registerPrivateChannel(data: Record<string, any>) {
+    this.serviceChannelName = `${this.prefix ? `${this.prefix}-` : ""}${data.uuid}`;
 
-    this.subscriber.on("message", (channel, message) => {
-      const { event, data, metadata } = JSON.parse(message) as RegisterResponse;
+    console.log("attributed uuid", data.uuid);
 
-      if (metadata && metadata.origin === this.personalUuid) {
-        return;
-      }
+    await this.subscriber.subscribe(this.serviceChannelName);
 
-      if (metadata.to === this.personalUuid) {
-        if (event === config.event.gateway.approvement) {
-
-          this.channel = new Redis.Channel({
-            name: data.uuid,
-            prefix: this.prefix
-          });
-
-          /*
-          * Use the service channel to listen on event related to the specific services
-          * and to push related response to the gateway
-          */
-         // console.log(this);
-
-         this.logger.info({ event, data, metadata }, "New incoming message from gateway.");
-        }
-      }
+    this.serviceChannel = new Redis.Channel({
+      name: data.uuid,
+      prefix: this.prefix
     });
+  }
+
+  private async handleGatewayMessages(message: Record<string, any>): Promise<void> {
+    const { event, data, metadata } = message;
+
+    switch (event) {
+      case events.gateway.approvement:
+        this.logger.info({
+          event,
+          data,
+          metadata,
+          uptime: process.uptime()
+        }, "New approvement message from gateway.");
+
+        await this.registerPrivateChannel(data);
+        break;
+      default:
+        this.logger.info({
+          event,
+          data,
+          metadata,
+          uptime: process.uptime()
+        }, "New unknown message from gateway");
+        break;
+    }
+  }
+
+  private async handleMessages(channel: string, message: Record<string, any>): Promise<void> {
+    const { event, data, metadata } = message;
+
+    console.log("not happening", channel, event, data, metadata);
+    // if (channel === this.serviceChannelName) {
+    // }
   }
 }
