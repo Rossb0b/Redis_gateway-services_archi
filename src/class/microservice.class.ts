@@ -13,10 +13,10 @@ import {
   SubscribeTo
 } from "../types/index";
 
-type MicroServiceOptions = RegistrationDataIn;
+type ServiceOptions = RegistrationDataIn;
 
-export class MicroService {
-  readonly gatewayChannel: Redis.Channel<MicroServiceOptions, RegistrationMetadataIn>;
+export class Service {
+  readonly gatewayChannel: Redis.Channel<ServiceOptions, RegistrationMetadataIn>;
   readonly gatewayChannelName: string;
   readonly prefix: Prefix | undefined;
   readonly subscribeTo: SubscribeTo | undefined;
@@ -30,7 +30,7 @@ export class MicroService {
   private serviceChannelName: string;
   private serviceChannel: Redis.Channel<Record<string, any>, Record<string, any>>;
 
-  constructor(options: MicroServiceOptions) {
+  constructor(options: ServiceOptions) {
     const { name, prefix, subscribeTo } = options;
 
     this.name = name;
@@ -45,8 +45,6 @@ export class MicroService {
       name: channels.gateway,
       prefix
     });
-
-    console.log("personnal uuid :", this.personalUuid);
   }
 
   get redis() {
