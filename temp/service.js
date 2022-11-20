@@ -1,23 +1,33 @@
-const MicroServices = require("../dist/class/microservice.class");
+const Services = require("../dist/class/service.class");
 const Redis = require("@myunisoft/redis-utils");
 
 const kPrefix = "local";
 
-const subscribeTo = [{
-  eventName: "foo"
-},
-{
-  eventName: "bar",
-  delay: 3600,
-  horizontalScall: false
-}];
+const subscribeTo = [
+  {
+    event: "foo"
+  },
+  {
+    event: "bar",
+    delay: 3600,
+    horizontalScall: false
+  }
+];
 
 async function initService() {
   await Redis.initRedis({ port: process.env.REDIS_PORT || 6379 });
 
-  const service = new MicroServices.MicroService({ name: "foo", prefix: kPrefix, subscribeTo });
+  const service = new Services.Service({ name: "foo", prefix: kPrefix, subscribeTo });
   await service.initialize();
 
+  await service.publish({
+    name: "connector",
+    operation: "CREATE",
+    data: {
+      id: "1",
+      code: "Foo"
+    }
+  });
 }
 
 initService().catch(error => console.error(error));

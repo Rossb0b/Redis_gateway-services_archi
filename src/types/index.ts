@@ -1,17 +1,17 @@
 export interface SubscribeTo {
-  eventName: string;
+  event: string;
   delay?: number;
   horizontalScall?: boolean;
 }
 
 export type Prefix = "local" | "dev" | "preprod" | "prod";
 
-export interface Interaction {
+export interface Transaction {
   event: string;
-  data: Record<string, any> | null;
+  data?: Record<string, any>;
   metadata: {
     origin: string;
-    to: string;
+    to?: string;
   }
   aliveSince: number;
 }
@@ -24,7 +24,7 @@ export interface RegistrationDataIn {
   name: string;
   /* Commonly used to distinguish environnements */
   prefix?: Prefix;
-  subscribeTo?: SubscribeTo;
+  subscribeTo?: SubscribeTo[];
 }
 
 export interface RegistrationMetadataIn {
@@ -38,7 +38,9 @@ export interface RegistrationMessageIn {
 }
 
 export interface RegistrationDataOut {
-  uuid: string;
+  data: {
+    uuid: string;
+  }
 }
 
 export interface RegistrationMetadataOut {
@@ -52,8 +54,19 @@ export interface RegistrationMessageOut {
   metadata: RegistrationMetadataOut;
 }
 
-export interface InteractionMetadata {
+export interface PingMessage {
+  event: string;
+}
+
+export interface PongMessage {
+  event: string;
+  data: {
+    prefix?: Prefix;
+  }
+}
+
+export interface TransactionMetadata {
   origin: string;
-  to: string;
-  interactionId: string;
+  to?: string;
+  transactionId?: string;
 }

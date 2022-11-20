@@ -8,14 +8,14 @@ import { channels, config, events, serviceStoreName } from "../utils/config";
 import { deepParse } from "../utils/utils";
 import { Bar, Events, Foo } from "../events";
 import {
-  Interaction,
+  Transaction,
   Prefix,
   RegistrationDataIn,
   RegistrationDataOut,
   RegistrationMetadataIn,
   RegistrationMetadataOut,
   SubscribeTo,
-  InteractionMetadata
+  TransactionMetadata
 } from "~/types";
 
 // Constants
@@ -49,14 +49,17 @@ export class Gateway {
   protected subscriber: Redis.Redis;
 
   private logger: logger.Logger;
-  private serviceChannels = new Map<string, Redis.Channel<Record<string, any>, InteractionMetadata>>();
+  private serviceChannels = new Map<string,
+    Redis.Channel<{ event: string; } & Record<string, any>,
+      TransactionMetadata>
+  >();
 
   private treeNames = new Set<string>();
 
   private pingServiceInterval: NodeJS.Timer;
   private checkServiceInterval: NodeJS.Timer;
 
-  private interactions = new Map<string, Interaction>();
+  private interactions = new Map<string, Transaction>();
 
   constructor(options: GatewayOptions = {}) {
     const { prefix } = options;
@@ -201,21 +204,20 @@ export class Gateway {
           const serviceChannel = this.serviceChannels.get(uuid);
 
           if (serviceChannel) {
-            const interactionId = uuidv4();
+            const transactionId = uuidv4();
 
             const event = {
               event: events.serviceChannels.check.ping,
-              data: {},
               metadata: {
                 origin: this.personalUuid,
                 to: uuid,
-                interactionId
+                transactionId
               }
             };
 
             await serviceChannel.publish(event);
 
-            this.interactions.set(interactionId, { ...event, aliveSince: Date.now() });
+            this.interactions.set(transactionId, { ...event, aliveSince: Date.now() });
 
             this.logger.info({
               ...event
@@ -243,11 +245,11 @@ export class Gateway {
               value: JSON.stringify(tree)
             });
 
-            for (const [interactionId, interaction] of this.interactions) {
+            for (const [transactionId, interaction] of this.interactions) {
               if (interaction.metadata.to === uuid) {
                 // Delete ping interaction since the service is off
                 if (interaction.event === events.serviceChannels.check.ping) {
-                  this.interactions.delete(interactionId);
+                  this.interactions.delete(transactionId);
                 }
 
                 // redistribute events & so interactions to according services
@@ -279,12 +281,12 @@ export class Gateway {
           uptime: process.uptime()
         }, "PONG FROM A SERVICE");
 
-        const { interactionId } = metadata;
+        const { transactionId } = metadata;
 
-        const interaction = this.interactions.get(interactionId);
+        const interaction = this.interactions.get(transactionId);
 
         if (interaction) {
-          this.interactions.delete(interactionId);
+          this.interactions.delete(transactionId);
         }
 
         const treeName = `${data.prefix ? `${data.prefix}-` : ""}${serviceStoreName}`;

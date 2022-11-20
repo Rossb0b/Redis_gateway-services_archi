@@ -1,25 +1,33 @@
+// Import Node.js Dependencies
+import { EventEmitter } from "events";
+
 // Import Third-party Dependencies
 import * as Redis from "@myunisoft/redis-utils";
+import { EventOptions, Events } from "@myunisoft/events";
 import { v4 as uuidv4 } from "uuid";
 import * as logger from "pino";
 
 // Import Internal Dependencies
 import { channels, config, events } from "../utils/config";
 import {
-  InteractionMetadata,
+  TransactionMetadata,
   Prefix,
   RegistrationDataIn,
   RegistrationMetadataIn,
-  SubscribeTo
+  SubscribeTo,
+  PongMessage
 } from "../types/index";
 
 type ServiceOptions = RegistrationDataIn;
 
-export class Service {
-  readonly gatewayChannel: Redis.Channel<ServiceOptions, RegistrationMetadataIn>;
+export class Service<T extends keyof Events = keyof Events> extends EventEmitter {
+  readonly gatewayChannel: Redis.Channel<
+    { event: string; data: RegistrationDataIn },
+    RegistrationMetadataIn
+  >;
   readonly gatewayChannelName: string;
   readonly prefix: Prefix | undefined;
-  readonly subscribeTo: SubscribeTo | undefined;
+  readonly subscribeTo: SubscribeTo[] | undefined;
 
   readonly personalUuid: string = uuidv4();
   protected subscriber: Redis.Redis;
@@ -28,9 +36,14 @@ export class Service {
   private logger: logger.Logger;
   private givenUuid: string;
   private serviceChannelName: string;
-  private serviceChannel: Redis.Channel<Record<string, any>, Record<string, any>>;
+  private serviceChannel: Redis.Channel<
+    PongMessage | EventOptions<T>,
+    TransactionMetadata
+  >;
 
   constructor(options: ServiceOptions) {
+    super();
+
     const { name, prefix, subscribeTo } = options;
 
     this.name = name;
@@ -49,6 +62,18 @@ export class Service {
 
   get redis() {
     return Redis.getRedis();
+  }
+
+  public async publish(options: EventOptions<T>) {
+    await this.serviceChannel.publish(Object.assign({}, options, {
+      metadata: {
+        origin: this.givenUuid,
+      }
+    }));
+
+    this.logger.info({
+      event: options.name
+    },"Published a new event to the gateway");
   }
 
   public async initialize() {
@@ -101,6 +126,11 @@ export class Service {
     });
 
     this.logger.info({ uptime: process.uptime() }, "Registring as a new service to the gateway");
+
+    await new Promise((resolve) => this.once("registred", () => {
+      console.log("FIFOHIUDHIKUFDHFJKHSJDKFHJDSKJF");
+      resolve(null);
+    }));
   }
 
   private async registerPrivateChannel(data: Record<string, any>) {
@@ -114,6 +144,8 @@ export class Service {
     });
 
     this.givenUuid = data.uuid;
+
+    this.emit("registred");
   }
 
   private async handleGatewayMessages(message: Record<string, any>): Promise<void> {
@@ -148,7 +180,7 @@ export class Service {
 
     if (channel === this.serviceChannelName) {
       if (event === events.serviceChannels.check.ping) {
-        const { metadata } = message as { data: Record<string, any>, metadata: InteractionMetadata };
+        const { metadata } = message as { data: Record<string, any>, metadata: TransactionMetadata };
 
         const event = {
           event: events.serviceChannels.check.pong,
@@ -158,7 +190,7 @@ export class Service {
           metadata: {
             origin: this.givenUuid,
             to: metadata.origin,
-            interactionId: metadata.interactionId
+            transactionId: metadata.transactionId
           }
         }
 
@@ -178,3 +210,15 @@ export class Service {
     }
   }
 }
+
+
+const subscribeTo = [
+  {
+    event: "foo"
+  },
+  {
+    event: "bar",
+    delay: 3600,
+    horizontalScall: false
+  }
+];
